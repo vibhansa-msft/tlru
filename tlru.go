@@ -17,14 +17,23 @@ type TLRU struct {
 	// Timeout to evict the nodes which are not used for given interval
 	Timeout uint32
 
+	// Timeout to callback application to check if it wants to evict last node
+	AppCheckTimeout uint32
+
 	// Number of nodes allowed in the list
 	MaxNodes uint32
 
 	// Function called back for eviceted nodes
 	Evict func(*list.Element)
 
+	// Function to check if application wants to force evict last node
+	AppCheck func() bool
+
 	// Expiry timer
 	expiry <-chan time.Time
+
+	// App Expiry timer
+	appExpiry <-chan time.Time
 
 	// Channle to hold list of nodes to be refreshed
 	refresh chan *list.Element
@@ -40,10 +49,12 @@ type TLRU struct {
 
 	// Channel to mark user has requested to stop the TLRU
 	done chan int
+
+	evictMode func(node *list.Element)
 }
 
 // NewTLRU : Create a new Time based LRU
-func New(maxNodes, timeout uint32, evict func(*list.Element)) (*TLRU, error) {
+func New(maxNodes, timeout uint32, evict func(*list.Element), appchecktimeout uint32, appcheck func() bool) (*TLRU, error) {
 	if timeout == 0 {
 		return nil, fmt.Errorf("timeout can not be zero")
 	}
@@ -53,18 +64,28 @@ func New(maxNodes, timeout uint32, evict func(*list.Element)) (*TLRU, error) {
 	}
 
 	return &TLRU{
-		MaxNodes: maxNodes,
-		Timeout:  timeout,
-		Evict:    evict,
-		nodes:    0,
-		nodeList: list.New(),
+		MaxNodes:        maxNodes,
+		Timeout:         timeout,
+		Evict:           evict,
+		AppCheckTimeout: appchecktimeout,
+		AppCheck:        appcheck,
+		nodes:           0,
+		nodeList:        list.New(),
+		evictMode:       nil,
 	}, nil
 }
 
 // Start : Init the LRU and start the watchDog thread
 func (tlru *TLRU) Start() error {
 	// Create ticker for timeout
-	tlru.expiry = time.Tick(time.Duration(time.Duration(tlru.Timeout) * time.Second))
+	if tlru.Timeout > 0 {
+		tlru.expiry = time.Tick(time.Duration(time.Duration(tlru.Timeout) * time.Second))
+	}
+
+	// Create ticker for timeout
+	if tlru.AppCheckTimeout > 0 {
+		tlru.appExpiry = time.Tick(time.Duration(time.Duration(tlru.AppCheckTimeout) * time.Second))
+	}
 
 	// Channel to hold refresh backlog
 	tlru.refresh = make(chan *list.Element, 10000)
@@ -74,6 +95,8 @@ func (tlru *TLRU) Start() error {
 
 	// Create channel to mark the completion from user application
 	tlru.done = make(chan int, 1)
+
+	tlru.evictMode = tlru.evictAsync
 
 	tlru.wg.Add(1)
 	go tlru.watchDog()
@@ -97,14 +120,19 @@ func (tlru *TLRU) Stop() error {
 
 // Add : Add this new node to the lru
 func (tlru *TLRU) Add(data any) *list.Element {
-	tlru.Lock()
-	defer tlru.Unlock()
+	expire := false
 
+	tlru.Lock()
 	// Create a new node and push it to the front of linked list
 	node := tlru.nodeList.PushFront(data)
 	tlru.nodes++
 
 	if tlru.MaxNodes != 0 && tlru.nodes > tlru.MaxNodes {
+		expire = true
+	}
+	tlru.Unlock()
+
+	if expire {
 		// List has grown so time to expire atleast one node
 		go tlru.expireNode()
 	}
@@ -129,7 +157,10 @@ func (tlru *TLRU) expireNode() {
 	}
 
 	// Remove this node from list and call evict
-	tlru.removeInternal(node)
+	if node != nil {
+		tlru.removeInternal(node)
+	}
+
 	return
 }
 
@@ -146,6 +177,16 @@ func (tlru *TLRU) Remove(node *list.Element) {
 func (tlru *TLRU) removeInternal(node *list.Element) {
 	tlru.nodeList.Remove(node)
 	tlru.nodes--
+	tlru.evictMode(node)
+}
+
+// evictAsync : evict the expired node in async mode
+func (tlru *TLRU) evictAsync(node *list.Element) {
+	go tlru.Evict(node)
+}
+
+// evictAsync : evict the expired node in sync mode
+func (tlru *TLRU) evictSync(node *list.Element) {
 	tlru.Evict(node)
 }
 
@@ -166,6 +207,15 @@ func (tlru *TLRU) watchDog() {
 			tlru.expireNodes()
 			tlru.updateMarker()
 
+		case <-tlru.appExpiry:
+			// Time to check with application if it wants to expire last node
+			/* This is useful in cases where application based on some logic wishes to evict
+			   a node early, instead of waiting for the timeout
+			*/
+			if tlru.AppCheck() {
+				tlru.expireNode()
+			}
+
 		case node := <-tlru.refresh:
 			// bringToFront this node to front of the lru
 			tlru.Lock()
@@ -177,6 +227,7 @@ func (tlru *TLRU) watchDog() {
 				<-tlru.refresh
 			}
 
+			tlru.evictMode = tlru.evictSync
 			tlru.updateMarker()
 			_ = tlru.expireNodes()
 			return

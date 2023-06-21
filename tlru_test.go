@@ -24,11 +24,11 @@ func (suite *tlruTestSuite) SetupTest() {
 }
 
 func (suite *tlruTestSuite) TestTLRUCreateFail() {
-	tlru, err := New(0, 0, nil)
+	tlru, err := New(0, 0, nil, 0, nil)
 	suite.assert.NotNil(err)
 	suite.assert.Nil(tlru)
 
-	tlru, err = New(0, 1, nil)
+	tlru, err = New(0, 1, nil, 0, nil)
 	suite.assert.NotNil(err)
 	suite.assert.Nil(tlru)
 }
@@ -36,14 +36,14 @@ func (suite *tlruTestSuite) TestTLRUCreateFail() {
 func (suite *tlruTestSuite) TestTLRUCreatePass() {
 	f := func(node *list.Element) {}
 
-	tlru, err := New(0, 5, f)
+	tlru, err := New(0, 5, f, 0, nil)
 	suite.assert.Nil(err)
 	suite.assert.NotNil(tlru)
 }
 
 func (suite *tlruTestSuite) TestTLRUStartStop() {
 	f := func(node *list.Element) {}
-	tlru, err := New(0, 5, f)
+	tlru, err := New(0, 5, f, 0, nil)
 	suite.assert.Nil(err)
 	suite.assert.NotNil(tlru)
 
@@ -56,7 +56,7 @@ func (suite *tlruTestSuite) TestTLRUStartStop() {
 
 func (suite *tlruTestSuite) TestAddAndRefresh() {
 	f := func(node *list.Element) {}
-	tlru, err := New(5, 20, f)
+	tlru, err := New(5, 20, f, 0, nil)
 	suite.assert.NotNil(tlru)
 	suite.assert.Nil(err)
 
@@ -85,7 +85,7 @@ func (suite *tlruTestSuite) TestAddAndRefreshTimeout() {
 		suite.T().Log("Evicted node :", node.Value)
 	}
 
-	tlru, err := New(5, 1, f)
+	tlru, err := New(5, 1, f, 0, nil)
 	suite.assert.NotNil(tlru)
 	suite.assert.Nil(err)
 
@@ -115,7 +115,7 @@ func (suite *tlruTestSuite) TestAddMaxNodes() {
 		suite.T().Log("Evicted node :", node.Value)
 	}
 
-	tlru, err := New(5, 10, f)
+	tlru, err := New(5, 10, f, 0, nil)
 	suite.assert.NotNil(tlru)
 	suite.assert.Nil(err)
 
@@ -144,7 +144,7 @@ func (suite *tlruTestSuite) TestAddLargeNumberOfNodes() {
 		suite.T().Log("Evicted node :", node.Value)
 	}
 
-	tlru, err := New(5, 300, f)
+	tlru, err := New(5, 300, f, 0, nil)
 	suite.assert.NotNil(tlru)
 	suite.assert.Nil(err)
 
@@ -156,14 +156,14 @@ func (suite *tlruTestSuite) TestAddLargeNumberOfNodes() {
 		suite.assert.NotNil(node)
 	}
 
-	time.Sleep(15)
-	suite.assert.Equal(count, 45)
+	time.Sleep(100)
+	suite.assert.Equal(45, count)
 
 	err = tlru.Stop()
 	suite.assert.Nil(err)
 
 	suite.assert.Nil(tlru.nodeList.Front())
-	suite.assert.Equal(count, 50)
+	suite.assert.Equal(50, count)
 }
 
 func (suite *tlruTestSuite) parallelPush(tlru *TLRU, wg *sync.WaitGroup) {
@@ -184,7 +184,7 @@ func (suite *tlruTestSuite) TestMultiThreadAdd() {
 		//suite.T().Log("Evicted node :", node.Value)
 	}
 
-	tlru, err := New(100, 300, f)
+	tlru, err := New(100, 300, f, 0, nil)
 	suite.assert.NotNil(tlru)
 	suite.assert.Nil(err)
 
@@ -206,4 +206,43 @@ func (suite *tlruTestSuite) TestMultiThreadAdd() {
 
 	suite.assert.Nil(tlru.nodeList.Front())
 	suite.assert.Equal(count, 5000)
+}
+
+func (suite *tlruTestSuite) testAppCheck() {
+	mtx := sync.Mutex{}
+	count := 0
+	acount := 0
+	f := func(node *list.Element) {
+		mtx.Lock()
+		count++
+		mtx.Unlock()
+		suite.T().Log("Evicted node :", node.Value)
+	}
+
+	a := func() bool {
+		mtx.Lock()
+		acount++
+		mtx.Unlock()
+		return acount < 10
+	}
+
+	tlru, err := New(20, 300, f, 2, a)
+	suite.assert.NotNil(tlru)
+	suite.assert.Nil(err)
+
+	err = tlru.Start()
+	suite.assert.Nil(err)
+
+	for i := 0; i < 10; i++ {
+		node := tlru.Add(i)
+		suite.assert.NotNil(node)
+	}
+
+	time.Sleep(5)
+	suite.assert.Equal(10, count)
+
+	err = tlru.Stop()
+	suite.assert.Nil(err)
+
+	suite.assert.Nil(tlru.nodeList.Front())
 }
