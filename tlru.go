@@ -38,6 +38,9 @@ type TLRU struct {
 	// Channle to hold list of nodes to be refreshed
 	refresh chan *list.Element
 
+	// Chnnel to hold files to be deleted
+	evictList chan *list.Element
+
 	// Current number of nodes in the list
 	nodes uint32
 
@@ -90,6 +93,9 @@ func (tlru *TLRU) Start() error {
 	// Channel to hold refresh backlog
 	tlru.refresh = make(chan *list.Element, 10000)
 
+	// Channel to hold async delete backlog
+	tlru.evictList = make(chan *list.Element, tlru.MaxNodes)
+
 	// Marker node to handle timeout and mark expired nodes
 	tlru.marker = tlru.nodeList.PushFront("###")
 
@@ -101,6 +107,9 @@ func (tlru *TLRU) Start() error {
 	tlru.wg.Add(1)
 	go tlru.watchDog()
 
+	tlru.wg.Add(1)
+	go tlru.asyncEviction()
+
 	return nil
 }
 
@@ -111,6 +120,9 @@ func (tlru *TLRU) Stop() error {
 
 	close(tlru.refresh)
 	tlru.refresh = nil
+
+	close(tlru.evictList)
+	tlru.evictList = nil
 
 	tlru.nodeList.Remove(tlru.marker)
 	tlru.marker = nil
@@ -182,7 +194,7 @@ func (tlru *TLRU) removeInternal(node *list.Element) {
 
 // evictAsync : evict the expired node in async mode
 func (tlru *TLRU) evictAsync(node *list.Element) {
-	go tlru.Evict(node)
+	tlru.evictList <- node
 }
 
 // evictAsync : evict the expired node in sync mode
@@ -232,6 +244,20 @@ func (tlru *TLRU) watchDog() {
 			_ = tlru.expireNodes()
 			return
 		}
+	}
+}
+
+// asyncEviction : Thread to evict nodes in async mode
+func (tlru *TLRU) asyncEviction() {
+	defer tlru.wg.Done()
+
+	for {
+		node, ok := <-tlru.evictList
+		if !ok {
+			// Channel is closed time to exit
+			return
+		}
+		tlru.Evict(node)
 	}
 }
 
