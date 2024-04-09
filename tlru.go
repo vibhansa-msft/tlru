@@ -116,13 +116,14 @@ func (tlru *TLRU) Start() error {
 // Stop : Stop the watchdog thread and expire all nodes
 func (tlru *TLRU) Stop() error {
 	tlru.done <- 1
-	tlru.wg.Wait()
 
 	close(tlru.refresh)
 	tlru.refresh = nil
 
 	close(tlru.evictList)
 	tlru.evictList = nil
+
+	tlru.wg.Wait()
 
 	tlru.nodeList.Remove(tlru.marker)
 	tlru.marker = nil
