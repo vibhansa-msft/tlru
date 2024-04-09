@@ -107,7 +107,8 @@ func (tlru *TLRU) Start() error {
 	tlru.wg.Add(1)
 	go tlru.watchDog()
 
-	tlru.wg.Add(1)
+	// At time of stop we will close the channel and then wait for this thread to complete
+	// so wg.add will be done at Stop time.
 	go tlru.asyncEviction()
 
 	return nil
@@ -116,14 +117,15 @@ func (tlru *TLRU) Start() error {
 // Stop : Stop the watchdog thread and expire all nodes
 func (tlru *TLRU) Stop() error {
 	tlru.done <- 1
+	tlru.wg.Wait()
 
 	close(tlru.refresh)
 	tlru.refresh = nil
 
+	tlru.wg.Add(1)
 	close(tlru.evictList)
-	tlru.evictList = nil
-
 	tlru.wg.Wait()
+	tlru.evictList = nil
 
 	tlru.nodeList.Remove(tlru.marker)
 	tlru.marker = nil

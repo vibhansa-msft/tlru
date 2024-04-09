@@ -2,6 +2,7 @@ package tlru
 
 import (
 	"container/list"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -245,4 +246,37 @@ func (suite *tlruTestSuite) testAppCheck() {
 	suite.assert.Nil(err)
 
 	suite.assert.Nil(tlru.nodeList.Front())
+}
+
+func (suite *tlruTestSuite) TestAsyncEvict() {
+	count := 0
+	f := func(node *list.Element) {
+		count++
+		fmt.Println("Evicted node :", node.Value)
+		suite.T().Log("Evicted node :", node.Value)
+	}
+
+	tlru, err := New(5, 3, f, 0, nil)
+	suite.assert.NotNil(tlru)
+	suite.assert.Nil(err)
+
+	err = tlru.Start()
+	suite.assert.Nil(err)
+
+	for i := 0; i < 10; i++ {
+		node := tlru.Add(i)
+		suite.assert.NotNil(node)
+	}
+
+	time.Sleep(10)
+	for i := 100; i < 105; i++ {
+		node := tlru.Add(i)
+		suite.assert.NotNil(node)
+	}
+
+	err = tlru.Stop()
+	suite.assert.Nil(err)
+
+	suite.assert.Nil(tlru.nodeList.Front())
+	suite.assert.Equal(count, 15)
 }
