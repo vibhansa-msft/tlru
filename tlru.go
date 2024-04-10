@@ -254,12 +254,8 @@ func (tlru *TLRU) watchDog() {
 func (tlru *TLRU) asyncEviction() {
 	defer tlru.wg.Done()
 
-	for {
-		node, ok := <-tlru.evictList
-		if !ok {
-			// Channel is closed time to exit
-			return
-		}
+	// Read all itesm from channel untill its closed
+	for node := range tlru.evictList {
 		tlru.Evict(node)
 	}
 }
